@@ -2,11 +2,14 @@
 import sys
 import socket
 import ssl
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote_plus
 from bs4 import BeautifulSoup
 
-def make_request(url):
-    # Ensure URL starts with http:// or https:// if scheme is missing
+def make_http_request(url):
+    """
+    Core function to make raw HTTP request using sockets.
+    Returns the response body as bytes, or None on error.
+    """
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
         
@@ -21,10 +24,7 @@ def make_request(url):
         path += "?" + parsed_url.query
 
     if not port:
-        if scheme == "https":
-            port = 443
-        else:
-            port = 80
+        port = 443 if scheme == "https" else 80
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -35,7 +35,13 @@ def make_request(url):
             
         sock.connect((host, port))
         
-        request = f"GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n"
+        # User-Agent header is often required for search engines
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
+            f"Connection: close\r\n\r\n"
+        )
         sock.sendall(request.encode())
         
         response = b""
@@ -47,41 +53,78 @@ def make_request(url):
             
         sock.close()
         
-        # Decode response
+        # Decode and split headers/body
         try:
-            response_text = response.decode('utf-8')
-        except UnicodeDecodeError:
-             response_text = response.decode('latin-1')
+            response_text = response.decode('utf-8', errors='ignore')
+        except:
+             response_text = response.decode('latin-1', errors='ignore')
 
-        # Separate headers and body
         parts = response_text.split("\r\n\r\n", 1)
         if len(parts) > 1:
-            body = parts[1]
+            return parts[1]
         else:
-            body = parts[0]
-            
-        soup = BeautifulSoup(body, 'html.parser')
-        
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.extract()
-            
-        text = soup.get_text()
-        
-        # Break into lines and remove leading/trailing space on each
-        lines = (line.strip() for line in text.splitlines())
-        # Break multi-headlines into a line each
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        # Drop blank lines
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        
-        print(text)
+            return parts[0]
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error making request: {e}")
+        return None
 
-def print_help():
-        print(f"Error: {e}")
+def handle_url(url):
+    body = make_http_request(url)
+    if not body:
+        return
+
+    soup = BeautifulSoup(body, 'html.parser')
+    for script in soup(["script", "style"]):
+        script.extract()
+            
+    text = soup.get_text()
+    lines = (line.strip() for line in text.splitlines())
+    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+    text = '\n'.join(chunk for chunk in chunks if chunk)
+    print(text)
+
+def handle_search(term):
+    print(f"Searching for: {term}")
+    search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(term)}"
+    
+    body = make_http_request(search_url)
+    if not body:
+        return
+
+    soup = BeautifulSoup(body, 'html.parser')
+    results = []
+    
+    # DuckDuckGo HTML structure:
+    # Results are usually in div with class 'links_main' -> a class 'result__a'
+    
+    for link_tag in soup.find_all('a', class_='result__a'):
+        title = link_tag.get_text(strip=True)
+        link = link_tag.get('href')
+        
+        if link:
+             results.append((title, link))
+        
+        if len(results) >= 10:
+            break
+
+    if not results:
+        print("No results found. DuckDuckGo might have blocked the request or changed structure.")
+        # Fallback to try generic anchor search if specific class fails
+        if not results:
+             for a in soup.find_all('a'):
+                 href = a.get('href')
+                 if href and href.startswith('http') and 'duckduckgo' not in href:
+                     title = a.get_text(strip=True)
+                     if title:
+                        results.append((title, href))
+                 if len(results) >= 10:
+                     break
+    
+    if results:
+        for i, (title, link) in enumerate(results, 1):
+            print(f"{i}. {title}")
+            print(f"   Link: {link}\n")
 
 def print_help():
     help_text = """go2web - Simple CLI for making HTTP requests
@@ -106,14 +149,13 @@ def main():
         if len(sys.argv) < 3:
             print("Error: Missing URL argument for -u")
             return
-        url = sys.argv[2]
-        make_request(url)
+        handle_url(sys.argv[2])
     elif command == '-s':
         if len(sys.argv) < 3:
             print("Error: Missing search term for -s")
             return
         search_term = " ".join(sys.argv[2:])
-        print(f"Searching for: {search_term} (Not implemented yet)")
+        handle_search(search_term)
     else:
         print(f"Error: Unknown argument '{command}'")
         print_help()
