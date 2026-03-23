@@ -1,2 +1,2 @@
 @echo off
-python go2web.py %*
+".venv\Scripts\python.exe" go2web.py %*
