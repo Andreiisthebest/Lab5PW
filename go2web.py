@@ -5,6 +5,7 @@ import ssl
 import hashlib
 import os
 import time
+import json
 from urllib.parse import urlparse, quote_plus, urljoin
 from bs4 import BeautifulSoup
 
@@ -22,12 +23,12 @@ def get_cache_path(url):
 def make_http_request(url, max_redirects=5):
     """
     Core function to make raw HTTP request using sockets.
-    Returns the response body as string, or None on error.
+    Returns a tuple (content_type, body, from_cache) or (None, None, False) on error.
     Handles redirects and caching.
     """
     if max_redirects < 0:
         print("Error: Too many redirects.")
-        return None
+        return None, None, False
 
     # Ensure URL starts with http:// or https:// if scheme is missing
     if not url.startswith("http://") and not url.startswith("https://"):
@@ -49,7 +50,10 @@ def make_http_request(url, max_redirects=5):
             print(f"DEBUG: Serving from cache: {url}")
             try:
                 with open(cache_path, 'r', encoding='utf-8') as f:
-                    return f.read()
+                    # Cache format: first line is Content-Type, rest is body
+                    content_type = f.readline().strip()
+                    body = f.read()
+                    return content_type, body, True
             except Exception as e:
                 print(f"DEBUG: Cache read error: {e}")
 
@@ -75,10 +79,12 @@ def make_http_request(url, max_redirects=5):
         sock.connect((host, port))
         
         # User-Agent header is often required for search engines
+        # Attempt to accept JSON and HTML
         request = (
             f"GET {path} HTTP/1.1\r\n"
             f"Host: {host}\r\n"
             f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36\r\n"
+            f"Accept: application/json, text/html;q=0.9, */*;q=0.8\r\n"
             f"Connection: close\r\n\r\n"
         )
         sock.sendall(request.encode())
@@ -111,7 +117,7 @@ def make_http_request(url, max_redirects=5):
         except IndexError:
             # Handle cases where response is empty or malformed
              print("Error: Malformed response")
-             return None
+             return None, None, False
             
         if 300 <= status_code < 400:
             # Handle Redirect
@@ -128,41 +134,66 @@ def make_http_request(url, max_redirects=5):
                 return make_http_request(new_url, max_redirects - 1)
             else:
                  print("Error: Redirect status without Location header.")
-                 return None
+                 return None, None, False
+
+        # Parse Content-Type
+        content_type = "text/html" # default
+        for line in headers_lines[1:]:
+            if line.lower().startswith("content-type:"):
+                content_type = line.split(":", 1)[1].strip().split(';')[0]
+                break
 
         # Save to cache
         try:
             with open(cache_path, 'w', encoding='utf-8') as f:
+                f.write(content_type + "\n")
                 f.write(body)
         except Exception as e:
             print(f"DEBUG: Cache write error: {e}")
 
-        return body
+        return content_type, body, False
 
     except Exception as e:
         print(f"Error making request: {e}")
-        return None
+        return None, None, False
 
 def handle_url(url):
-    body = make_http_request(url)
+    content_type, body, from_cache = make_http_request(url)
     if not body:
         return
 
-    soup = BeautifulSoup(body, 'html.parser')
-    for script in soup(["script", "style"]):
-        script.extract()
+    # Check content type for JSON vs HTML
+    if "application/json" in content_type:
+        try:
+            parsed_json = json.loads(body)
+            print(json.dumps(parsed_json, indent=4))
+        except json.JSONDecodeError:
+            print("Response claimed to be JSON but could not parse it.")
+            print(body)
+    else:
+        # Assume HTML or text
+        soup = BeautifulSoup(body, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.extract()
             
-    text = soup.get_text()
-    lines = (line.strip() for line in text.splitlines())
-    chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-    text = '\n'.join(chunk for chunk in chunks if chunk)
-    print(text)
+        text = soup.get_text()
+        
+        # Break into lines and remove leading/trailing space on each
+        lines = (line.strip() for line in text.splitlines())
+        # Break multi-headlines into a line each
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        # Drop blank lines
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        print(text)
 
 def handle_search(term):
     print(f"Searching for: {term}")
     search_url = f"https://html.duckduckgo.com/html/?q={quote_plus(term)}"
     
-    body = make_http_request(search_url)
+    content_type, body, from_cache = make_http_request(search_url)
     if not body:
         return
 
