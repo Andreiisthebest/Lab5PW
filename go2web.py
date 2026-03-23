@@ -2,14 +2,28 @@
 import sys
 import socket
 import ssl
+import hashlib
+import os
+import time
 from urllib.parse import urlparse, quote_plus, urljoin
 from bs4 import BeautifulSoup
+
+CACHE_DIR = ".go2web_cache"
+
+def get_cache_path(url):
+    """
+    Generates a unique filename for the URL cache.
+    """
+    url_hash = hashlib.md5(url.encode('utf-8')).hexdigest()
+    if not os.path.exists(CACHE_DIR):
+        os.makedirs(CACHE_DIR)
+    return os.path.join(CACHE_DIR, url_hash)
 
 def make_http_request(url, max_redirects=5):
     """
     Core function to make raw HTTP request using sockets.
     Returns the response body as string, or None on error.
-    Handles redirects.
+    Handles redirects and caching.
     """
     if max_redirects < 0:
         print("Error: Too many redirects.")
@@ -18,8 +32,27 @@ def make_http_request(url, max_redirects=5):
     # Ensure URL starts with http:// or https:// if scheme is missing
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
-        
+
+    # Clean URL for caching (ignore fragments)
     parsed_url = urlparse(url)
+    clean_url = parsed_url.scheme + "://" + parsed_url.netloc + parsed_url.path
+    if parsed_url.query:
+        clean_url += "?" + parsed_url.query
+
+    cache_path = get_cache_path(clean_url)
+    
+    # Check cache (valid for 60 seconds for simplicity in this lab)
+    if os.path.exists(cache_path):
+        current_time = time.time()
+        file_mod_time = os.path.getmtime(cache_path)
+        if current_time - file_mod_time < 60:
+            print(f"DEBUG: Serving from cache: {url}")
+            try:
+                with open(cache_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                print(f"DEBUG: Cache read error: {e}")
+
     scheme = parsed_url.scheme
     host = parsed_url.hostname
     port = parsed_url.port
@@ -96,6 +129,13 @@ def make_http_request(url, max_redirects=5):
             else:
                  print("Error: Redirect status without Location header.")
                  return None
+
+        # Save to cache
+        try:
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                f.write(body)
+        except Exception as e:
+            print(f"DEBUG: Cache write error: {e}")
 
         return body
 
