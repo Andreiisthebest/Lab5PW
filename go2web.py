@@ -2,14 +2,20 @@
 import sys
 import socket
 import ssl
-from urllib.parse import urlparse, quote_plus
+from urllib.parse import urlparse, quote_plus, urljoin
 from bs4 import BeautifulSoup
 
-def make_http_request(url):
+def make_http_request(url, max_redirects=5):
     """
     Core function to make raw HTTP request using sockets.
-    Returns the response body as bytes, or None on error.
+    Returns the response body as string, or None on error.
+    Handles redirects.
     """
+    if max_redirects < 0:
+        print("Error: Too many redirects.")
+        return None
+
+    # Ensure URL starts with http:// or https:// if scheme is missing
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "http://" + url
         
@@ -60,10 +66,38 @@ def make_http_request(url):
              response_text = response.decode('latin-1', errors='ignore')
 
         parts = response_text.split("\r\n\r\n", 1)
-        if len(parts) > 1:
-            return parts[1]
-        else:
-            return parts[0]
+        headers_section = parts[0]
+        body = parts[1] if len(parts) > 1 else ""
+        
+        headers_lines = headers_section.split("\r\n")
+        status_line = headers_lines[0]
+        
+        # simplistic status parsing "HTTP/1.1 200 OK"
+        try:
+            status_code = int(status_line.split(" ")[1])
+        except IndexError:
+            # Handle cases where response is empty or malformed
+             print("Error: Malformed response")
+             return None
+            
+        if 300 <= status_code < 400:
+            # Handle Redirect
+            location = None
+            for line in headers_lines[1:]:
+                if line.lower().startswith("location:"):
+                    location = line.split(":", 1)[1].strip()
+                    break
+            
+            if location:
+                # Handle relative redirect
+                new_url = urljoin(url, location)
+                print(f"Redirecting to: {new_url}")
+                return make_http_request(new_url, max_redirects - 1)
+            else:
+                 print("Error: Redirect status without Location header.")
+                 return None
+
+        return body
 
     except Exception as e:
         print(f"Error making request: {e}")
